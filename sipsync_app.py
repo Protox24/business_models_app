@@ -31,7 +31,7 @@ def init_state():
     if "last_top_buyer" not in st.session_state:
         st.session_state.last_top_buyer = None
 
-def compute_price_auction(pbase, bids, asks, capacity, delta_p=0.25,
+def compute_price_auction(pbase, bids, asks, capacity, delta_p=0.1,
                           max_up_pct=0.5, max_down_pct=0.3):
     """
     Auction Clearing Price:
