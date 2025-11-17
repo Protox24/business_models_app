@@ -1,9 +1,8 @@
-
 import streamlit as st
 import pandas as pd
 import numpy as np
-import time
 from datetime import datetime
+from sklearn.linear_model import LinearRegression
 
 st.set_page_config(page_title="SipSync Prototype", layout="wide")
 
@@ -30,77 +29,80 @@ def init_state():
         st.session_state.step = 0
     if "last_top_buyer" not in st.session_state:
         st.session_state.last_top_buyer = None
+    if "DI_history" not in st.session_state:
+        st.session_state.DI_history = {k: [] for k in st.session_state.drinks.keys()}
 
-def compute_price_auction(pbase, bids, asks, capacity, delta_p=0.1,
-                          max_up_pct=0.5, max_down_pct=0.3):
+def compute_price_linear(pbase, D, E, inv_ratio,
+                         alpha=0.05, beta=0.03, gamma=0.02,
+                         max_up_pct=0.5, max_down_pct=0.3, min_step=0.1):
     """
-    Auction Clearing Price:
-        P_t = Pbase + ΔP * (Bids - Asks) / Capacity
+    Fórmula lineal:
+        P_t = Pbase × (1 + αD + βE − γI)
+    donde I = (1 - inv_ratio)
     """
-    raw_price = pbase + delta_p * (bids - asks) / max(1, capacity)
+    I = 1 - inv_ratio
+    price_multiplier = 1 + alpha * D + beta * E - gamma * I
+    raw_price = pbase * price_multiplier
 
-    # Límites basados en el base_price
+    # Límites
     min_price = pbase * (1 - max_down_pct)
     max_price = pbase * (1 + max_up_pct)
-
-    # Aplicar clipping
     clipped_price = max(min(raw_price, max_price), min_price)
 
-    # Redondear al step mínimo
-    rounded_price = round(clipped_price / delta_p) * delta_p
-
+    # Redondeo
+    rounded_price = round(clipped_price / min_step) * min_step
     return round(rounded_price, 2)
 
-
 def simulate_step(event_factor=0.0, external_noise=0.1):
-    # Simulate orders for this timestep (one 'tick')
     st.session_state.step += 1
     timestamp = datetime.now().strftime("%H:%M:%S")
     orders = {}
     total_orders = 0
 
-    # Demand generation: baseline from popularity + small noise + recent momentum from last few steps
     for name, info in st.session_state.drinks.items():
         pop = info["popularity"]
-        # Poisson lambda proportional to popularity and (inventory remaining / initial)
         inv_ratio = info["inventory"] / max(info.get("initial_inventory", info["inventory"]), 1)
-        lam = max(0.1, pop * (1 + (1 - inv_ratio)) * 2.0)  # baseline expected orders
-        # Add small random spikes
+        lam = max(0.1, pop * (1 + (1 - inv_ratio)) * 2.0)
         qty = np.random.poisson(max(0.1, lam * (1 + np.random.normal(0, external_noise))))
         qty = int(qty)
         orders[name] = qty
         total_orders += qty
 
-    # Update inventories and compute demand factor D (normalize by recent average)
     demand_factors = {}
-    recent_window = 5
     for name, qty in orders.items():
         info = st.session_state.drinks[name]
         if "initial_inventory" not in info:
             info["initial_inventory"] = info["inventory"]
         info["inventory"] = max(0, info["inventory"] - qty)
-        # demand factor: current orders normalized by a baseline (popularity*2)
         D = qty / (max(1, info["popularity"] * 2))
         demand_factors[name] = D
 
-    # Update prices
     prices = {}
     for name, info in st.session_state.drinks.items():
         inv_ratio = info["inventory"] / max(info.get("initial_inventory", info["inventory"]), 1)
         D = demand_factors.get(name, 0.0)
-        pt = compute_price_auction(info["base_price"], D, event_factor, inv_ratio)
+        pt = compute_price_linear(info["base_price"], D, event_factor, inv_ratio)
         prices[name] = pt
         st.session_state.price_history[name].append(pt)
+
+        # Guardar factores para regresión
+        st.session_state.DI_history[name].append({
+            "time": timestamp,
+            "drink": name,
+            "p_base": info["base_price"],
+            "p_t": pt,
+            "D": D,
+            "E": event_factor,
+            "I": 1 - inv_ratio
+        })
+
     st.session_state.time_index.append(timestamp)
 
-    # Record order history row
     row = {"time": timestamp}
     row.update(orders)
     row["total_orders"] = total_orders
     st.session_state.order_history.append(row)
 
-    # Determine hourly/top buyer placeholder
-    # (for prototype we use highest orders in this timestep)
     if total_orders > 0:
         top_drink = max(orders.items(), key=lambda x: x[1])[0]
         st.session_state.last_top_buyer = f"{top_drink} (qty {orders[top_drink]})"
@@ -109,14 +111,30 @@ def simulate_step(event_factor=0.0, external_noise=0.1):
 
     return prices, orders
 
+def estimate_coeffs(drink_name):
+    df = pd.DataFrame(st.session_state.DI_history[drink_name])
+    if df.empty:
+        return None
+    y = (df["p_t"] / df["p_base"]) - 1.0
+    X = df[["D", "E", "I"]]
+    model = LinearRegression()
+    model.fit(X, y)
+    return {
+        "alpha": model.coef_[0],
+        "beta": model.coef_[1],
+        "gamma": -model.coef_[2],
+        "intercept": model.intercept_,
+        "r2": model.score(X, y)
+    }
+
 # --- Initialize state ---
 init_state()
 
 # --- Sidebar controls ---
 st.sidebar.header("Controls")
-event_factor = st.sidebar.slider("Event factor (E) — e.g., nearby event intensity", 0.0, 3.0, 0.0, 0.1)
+event_factor = st.sidebar.slider("Event factor (E)", 0.0, 3.0, 0.0, 0.1)
 external_noise = st.sidebar.slider("External randomness (noise)", 0.0, 1.0, 0.15, 0.01)
-simulate_steps = st.sidebar.number_input("Simulate steps (each step = 1 tick)", min_value=1, max_value=500, value=1, step=1)
+simulate_steps = st.sidebar.number_input("Simulate steps", min_value=1, max_value=500, value=1, step=1)
 reset_btn = st.sidebar.button("Reset simulation")
 add_orders = st.sidebar.button("Simulate single step now")
 
@@ -127,6 +145,7 @@ if reset_btn:
     st.session_state.order_history = []
     st.session_state.step = 0
     st.session_state.last_top_buyer = None
+    st.session_state.DI_history = {k: [] for k in st.session_state.drinks.keys()}
     st.experimental_rerun()
 
 # --- Top row: prices and metrics ---
@@ -135,14 +154,10 @@ col1, col2 = st.columns([3,2])
 
 with col1:
     st.subheader("Mercado en vivo — Precios actuales")
-    # show current prices (last price if exists otherwise base_price)
     current_prices = {}
     for name, info in st.session_state.drinks.items():
         ph = st.session_state.price_history.get(name, [])
-        if ph:
-            current_prices[name] = ph[-1]
-        else:
-            current_prices[name] = info["base_price"]
+        current_prices[name] = ph[-1] if ph else info["base_price"]
 
     price_cols = st.columns(len(current_prices))
     for i, (name, price) in enumerate(current_prices.items()):
@@ -157,7 +172,7 @@ with col2:
     for name, info in st.session_state.drinks.items():
         st.write(f"- {name}: {info['inventory']}")
 
-# --- Simulation controls in main area ---
+# --- Simulation controls ---
 st.markdown("---")
 st.subheader("Simulación")
 
@@ -174,7 +189,7 @@ if st.session_state.time_index:
     df_prices = pd.DataFrame(st.session_state.price_history, index=st.session_state.time_index)
     st.line_chart(df_prices)
 else:
-    st.info("Aún no hay datos: presiona 'Simular N pasos' o 'Simular single step' en la barra lateral.")
+    st.info("Aún no hay datos: presiona 'Simular N pasos' o 'Simular single step'.")
 
 st.markdown("### Historial de órdenes (últimos 50 registros)")
 if st.session_state.order_history:
@@ -183,9 +198,6 @@ if st.session_state.order_history:
 else:
     st.write("Sin órdenes aún.")
 
-st.markdown("### Parámetros y lógica")
-st.write("Fórmula usada: Pt = Pbase × (1 + 0.05×D + 0.03×E − 0.02×I)")
-st.write("D = factor de demanda (órdenes actuales normalizadas). E = factor de evento. I = inventario relativo (0 a 1).")
-
-st.markdown("---")
-st.caption("Prototipo educativo. No conectado a POS real. Ajusta parámetros para ver diferentes comportamientos.")
+# --- Estimación de coeficientes ---
+st.markdown("### Estimación de coeficientes α, β, γ")
+drink
