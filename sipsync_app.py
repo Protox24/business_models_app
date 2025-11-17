@@ -88,7 +88,7 @@ def simulate_step(event_factor=0.0, external_noise=0.1):
     for name, info in st.session_state.drinks.items():
         inv_ratio = info["inventory"] / max(info.get("initial_inventory", info["inventory"]), 1)
         D = demand_factors.get(name, 0.0)
-        pt = compute_price(info["base_price"], D, event_factor, inv_ratio)
+        pt = compute_price_auction(info["base_price"], D, event_factor, inv_ratio)
         prices[name] = pt
         st.session_state.price_history[name].append(pt)
     st.session_state.time_index.append(timestamp)
