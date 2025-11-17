@@ -31,9 +31,41 @@ def init_state():
     if "last_top_buyer" not in st.session_state:
         st.session_state.last_top_buyer = None
 
-def compute_price(pbase, demand_factor, event_factor, inv_ratio):
-    # Formula from PDF: Pt = Pbase * (1 + 0.05*D + 0.03*E - 0.02*I)
-    return round(pbase * (1 + 0.05 * demand_factor + 0.03 * event_factor - 0.02 * inv_ratio), 2)
+def compute_price(pbase, D, E, inv_ratio,
+                  alpha=0.6, beta=0.3, gamma=0.4,
+                  max_up_pct=0.5, max_down_pct=0.3, min_step=0.5):
+    """
+    pbase: base_price
+    D: demand factor (0..1)
+    E: event factor
+    inv_ratio: inventory_ratio = stock_units / initial_stock (0..1)
+
+    Fórmula:
+        price_multiplier = 1 + αD + βE + γI
+        I = (1 - inv_ratio)
+    """
+
+    # Inventario invertido (0..1)
+    I = 1 - inv_ratio
+
+    # Multiplicador del precio
+    price_multiplier = 1 + alpha * D + beta * E + gamma * I
+
+    # Precio sin límites
+    raw_price = pbase * price_multiplier
+
+    # Límites basados en el base_price
+    min_price = pbase * (1 - max_down_pct)
+    max_price = pbase * (1 + max_up_pct)
+
+    # Aplicar clipping
+    clipped_price = max(min(raw_price, max_price), min_price)
+
+    # Redondear al step mínimo
+    rounded_price = round(clipped_price / min_step) * min_step
+
+    return round(rounded_price, 2)
+
 
 def simulate_step(event_factor=0.0, external_noise=0.1):
     # Simulate orders for this timestep (one 'tick')
