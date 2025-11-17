@@ -31,28 +31,13 @@ def init_state():
     if "last_top_buyer" not in st.session_state:
         st.session_state.last_top_buyer = None
 
-def compute_price(pbase, D, E, inv_ratio,
-                  alpha=0.6, beta=0.3, gamma=0.4,
-                  max_up_pct=0.5, max_down_pct=0.3, min_step=0.5):
+def compute_price_auction(pbase, bids, asks, capacity, delta_p=0.5,
+                          max_up_pct=0.5, max_down_pct=0.3):
     """
-    pbase: base_price
-    D: demand factor (0..1)
-    E: event factor
-    inv_ratio: inventory_ratio = stock_units / initial_stock (0..1)
-
-    Fórmula:
-        price_multiplier = 1 + αD + βE + γI
-        I = (1 - inv_ratio)
+    Auction Clearing Price:
+        P_t = Pbase + ΔP * (Bids - Asks) / Capacity
     """
-
-    # Inventario invertido (0..1)
-    I = 1 - inv_ratio
-
-    # Multiplicador del precio
-    price_multiplier = 1 + alpha * D + beta * E + gamma * I
-
-    # Precio sin límites
-    raw_price = pbase * price_multiplier
+    raw_price = pbase + delta_p * (bids - asks) / max(1, capacity)
 
     # Límites basados en el base_price
     min_price = pbase * (1 - max_down_pct)
@@ -62,7 +47,7 @@ def compute_price(pbase, D, E, inv_ratio,
     clipped_price = max(min(raw_price, max_price), min_price)
 
     # Redondear al step mínimo
-    rounded_price = round(clipped_price / min_step) * min_step
+    rounded_price = round(clipped_price / delta_p) * delta_p
 
     return round(rounded_price, 2)
 
