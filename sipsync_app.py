@@ -49,7 +49,7 @@ def simulate_step(drinks, alpha, beta, gamma, event_factor=0.0, external_noise=0
     return DI_records
 
 
-def generate_dataset(alpha=0.04, beta=0.05, gamma=0.01, steps=500):
+def generate_dataset(alpha=0.4, beta=0.5, gamma=0.1, steps=500):
     drinks = default_drinks()
     all_records = []
 
